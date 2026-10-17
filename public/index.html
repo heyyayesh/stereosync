@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Stereo Sync - Precision P2P & YT</title>
+  <title>Stereo Sync - Final P2P & YT</title>
   <link rel="manifest" href="/manifest.json" />
   <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
   <style>
@@ -113,10 +113,17 @@
       margin-top: 8px;
       border-radius: 8px;
     }
+    #playerContainer {
+      background: #000;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-top: 10px;
+      border: 1px solid #333;
+    }
   </style>
 </head>
 <body>
-  <h2 style="margin: 0 0 10px 0;">Stereo Sync: Local File & YT</h2>
+  <h2 style="margin: 0 0 10px 0;">Stereo Sync: Local & YouTube</h2>
 
   <div id="unlockBanner" class="unlock-banner" onclick="unlockMobileAudio()">
     🔊 TAP HERE ONCE TO UNLOCK AUDIO PLAYBACK ON THIS DEVICE
@@ -142,10 +149,10 @@
   <div class="card">
     <strong>2. Active Audio Source (Click to Switch All Devices):</strong>
     <div class="row">
-      <button id="modeLocalBtn" class="mode-btn active" onclick="switchMode('LOCAL')">
+      <button id="modeLocalBtn" class="mode-btn secondary" onclick="switchMode('LOCAL')">
         📁 Local Audio File
       </button>
-      <button id="modeYtBtn" class="mode-btn secondary" onclick="switchMode('YT')">
+      <button id="modeYtBtn" class="mode-btn active" onclick="switchMode('YT')">
         ▶️ YouTube Music
       </button>
     </div>
@@ -153,7 +160,7 @@
 
   <!-- 3A. Local Audio File Loader -->
   <div class="card">
-    <strong>3A. Select Local Audio File (Syncs Paused, Play When Ready):</strong>
+    <strong>3A. Select Local Audio File:</strong>
     <div style="margin-top:8px;">
       <input type="file" id="audioFileInput" accept="audio/*" onchange="handleLocalFileSelect(event)" />
     </div>
@@ -161,7 +168,7 @@
       <div class="progress-bar" id="transferProgressBar"></div>
     </div>
     <div id="fileStatus" style="font-size:0.82rem; color:#00e676; margin-top:6px;">
-      Select an MP3/WAV/M4A/FLAC file on ONE device, wait for 100%, then press ▶ Play All.
+      Select an audio file on ONE device, wait for 100%, then press ▶ Play All.
     </div>
     <audio id="localAudioPlayer" controls playsinline></audio>
   </div>
@@ -173,8 +180,12 @@
       <input type="text" id="ytInput" placeholder="https://music.youtube.com/watch?v=jfKfPfyJRdk" />
       <button onclick="loadTrack()">Load YT</button>
     </div>
-    <div id="ytStatus" style="font-size:0.8rem; color:#aaa; margin-top:6px;">
+    <div id="ytStatus" style="font-size:0.8rem; color:#00e676; margin-top:6px;">
       Loaded YT ID: jfKfPfyJRdk
+    </div>
+    <!-- Visible YouTube Player Container so Host & Apps render audio correctly -->
+    <div id="playerContainer">
+      <div id="player"></div>
     </div>
   </div>
 
@@ -212,12 +223,10 @@
   </div>
 
   <div class="card metrics">
-    <span>Mode: <strong id="modeDisplay">LOCAL</strong></span>
+    <span>Mode: <strong id="modeDisplay">YT</strong></span>
     <span>Clock: <strong id="clockOffset">Master (0 ms)</strong></span>
     <span>Phase Drift: <strong id="driftDisplay">0 ms</strong></span>
   </div>
-
-  <div id="player"></div>
 
   <script src="https://www.youtube.com/iframe_api"></script>
   <script>
@@ -232,26 +241,24 @@
 
     const audioEl = document.getElementById('localAudioPlayer');
     let isLocalAudioReady = false;
-    let clockOffset = 0; // Strictly 0 on Host (Master), MasterTime - ClientTime on Joiners
+    let clockOffset = 0;
     let currentRole = 'STEREO';
     let audioUnlocked = false;
 
     const myClientId = 'dev-' + Math.random().toString(36).substring(2, 9);
     const myShortCode = String(Math.floor(1000 + Math.random() * 9000));
     let activeRoomCode = myShortCode;
-    const topicPrefix = 'yt-stereo-p2p-v8/';
+    const topicPrefix = 'yt-stereo-p2p-v9/';
 
-    // The device whose 4-digit code is used for the room is strictly the Clock Master (clockOffset = 0)
     function isClockMaster() {
       return activeRoomCode === myShortCode;
     }
 
-    // Returns the exact synchronized room timestamp in milliseconds on EVERY device
     function getSyncedNow() {
       return Date.now() + (isClockMaster() ? 0 : clockOffset);
     }
 
-    const CHUNK_SIZE = 16384; // 16KB chunks
+    const CHUNK_SIZE = 16384;
     let hostFileStore = null;
     let loadedFileId = null;
 
@@ -259,7 +266,7 @@
     let ytSavedPos = 0;
 
     let latestState = {
-      mode: 'LOCAL',
+      mode: 'YT', // Default to YouTube since you are testing YT playback!
       videoId: 'jfKfPfyJRdk',
       fileMeta: null,
       isPlaying: false,
@@ -315,13 +322,13 @@
       } else if (currentRole === 'RIGHT') {
         leftGain.gain.value = 0.0;
         rightGain.gain.value = 1.0;
-        rightGain.connect(mergerNode, 0, 0);
-        rightGain.connect(mergerNode, 0, 1);
+        leftGain.connect(mergerNode, 0, 0);
+        leftGain.connect(mergerNode, 0, 1);
       } else {
         leftGain.gain.value = 1.0;
         rightGain.gain.value = 1.0;
         leftGain.connect(mergerNode, 0, 0);
-        rightGain.connect(mergerNode, 0, 1);
+        leftGain.connect(mergerNode, 0, 1);
       }
     }
 
@@ -347,7 +354,7 @@
       applyState(latestState);
     }
 
-    // --- DUAL MQTT SIGNALING + DIRECT WEBRTC P2P CONTROL & FILE CHANNEL ---
+    // --- DUAL MQTT SIGNALING + DIRECT WEBRTC P2P ---
     const statusEl = document.getElementById('connStatus');
     document.getElementById('myRoomId').innerText = myShortCode;
 
@@ -375,7 +382,6 @@
     const peerConnections = {};
     const dataChannels = {};
 
-    // Sends control/sync packets over 1-3ms Direct Wi-Fi WebRTC P2P when open, plus MQTT for fallback/multi-peer
     let pubToggle = 0;
     function sendControlPacket(payload, forceMqttAlso = false) {
       payload.senderId = myClientId;
@@ -435,7 +441,6 @@
       mqttSecondary.subscribe(topicPrefix + activeRoomCode, { qos: 0 });
     }
 
-    // ONLY non-Master (Joining) devices run the NTP ping loop against the Master!
     function startClientNtpLoop() {
       if (ntpTimer) clearInterval(ntpTimer);
       if (isClockMaster()) {
@@ -453,7 +458,6 @@
       }, 1500);
     }
 
-    // --- WEBRTC DIRECT WI-FI P2P DATA CHANNEL (Carries Both Control Sync & File Chunks) ---
     const rtcConfig = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -506,67 +510,26 @@
 
       dc.onopen = () => {
         document.getElementById('p2pBadge').style.display = 'inline-block';
-        // Immediately fire a burst of ultra-low-latency P2P NTP pings so clock offset locks within 1-2ms!
         if (!isClockMaster()) {
-          rttHistory = []; // Clear slower MQTT RTT samples so 2ms Wi-Fi P2P samples take over immediately
+          rttHistory = [];
           for (let i = 0; i < 6; i++) {
             setTimeout(() => {
               sendControlPacket({ type: 'NTP_PING', clientSendTime: Date.now() }, false);
             }, i * 80);
           }
         }
-        if (hostFileStore) {
-          streamFileOverWebRTC(dc);
-        }
       };
 
       dc.onmessage = (evt) => {
         if (typeof evt.data === 'string') {
-          // Ultra-fast P2P JSON control packet (NTP_PING, NTP_PONG, STATE_SYNC, etc.)
           try {
             const data = JSON.parse(evt.data);
             handleIncomingPacket(data, 'P2P');
           } catch (e) {}
-          return;
         }
-        // Binary audio file chunk
-        const buf = evt.data;
-        if (buf.byteLength < 4) return;
-        const idx = new DataView(buf).getUint32(0, true);
-        const chunkBytes = new Uint8Array(buf, 4);
-        lastWebRtcChunkTime = Date.now();
-        onChunkReceived(idx, chunkBytes);
       };
     }
 
-    async function streamFileOverWebRTC(dc) {
-      if (!hostFileStore || dc.readyState !== 'open') return;
-      const { uint8, totalChunks, fileId } = hostFileStore;
-      for (let idx = 0; idx < totalChunks; idx++) {
-        if (dc.readyState !== 'open' || !hostFileStore || hostFileStore.fileId !== fileId) return;
-        while (dc.bufferedAmount > 262144) {
-          await new Promise(r => setTimeout(r, 12));
-          if (dc.readyState !== 'open') return;
-        }
-        const slice = uint8.subarray(idx * CHUNK_SIZE, (idx + 1) * CHUNK_SIZE);
-        const packet = new Uint8Array(4 + slice.byteLength);
-        new DataView(packet.buffer).setUint32(0, idx, true);
-        packet.set(slice, 4);
-        try {
-          dc.send(packet.buffer);
-        } catch (e) {
-          break;
-        }
-      }
-    }
-
-    // --- PACKET ROUTER (Handles Both P2P DataChannel & MQTT Fallback) ---
-    let incomingMeta = null;
-    let incomingChunks = [];
-    let receivedCount = 0;
-    let lastWebRtcChunkTime = 0;
-    let pullIntervalTimer = null;
-    let currentBlobUrl = null;
     const processedMsgIds = new Set();
 
     function handleIncomingMqtt(topic, messageBuffer) {
@@ -601,7 +564,6 @@
         statusEl.innerText = 'Connected! Devices paired in Room ' + activeRoomCode;
         latestState = data.state;
         updateModeButtonsUI(latestState.mode);
-        checkAndStartFilePullIfNeeded(latestState.fileMeta);
         applyState(latestState);
         startClientNtpLoop();
       } else if (data.type === 'RTC_SIGNAL' && data.targetId === myClientId) {
@@ -619,7 +581,6 @@
           pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(() => {});
         }
       } else if (data.type === 'NTP_PING') {
-        // ONLY the Clock Master responds to NTP_PING so there is a single unified time reference!
         if (isClockMaster()) {
           sendControlPacket({
             type: 'NTP_PONG',
@@ -634,54 +595,13 @@
         const offset = data.masterTime - (data.clientSendTime + rtt / 2);
         rttHistory.push({ rtt, offset, transport });
         if (rttHistory.length > 10) rttHistory.shift();
-        // Sort by lowest RTT (P2P packets have 1-4ms RTT and automatically win over MQTT packets)
         const bestSamples = [...rttHistory].sort((a, b) => a.rtt - b.rtt).slice(0, 4);
         clockOffset = Math.round(bestSamples.reduce((sum, s) => sum + s.offset, 0) / bestSamples.length);
         const minRtt = bestSamples[0].rtt;
         document.getElementById('clockOffset').innerText = `${clockOffset} ms (RTT ${minRtt}ms)`;
-      } else if (data.type === 'FILE_ANNOUNCE') {
-        latestState = data.state;
-        updateModeButtonsUI('LOCAL');
-        checkAndStartFilePullIfNeeded(data.fileMeta);
-      } else if (data.type === 'PULL_CHUNKS' && hostFileStore && data.fileId === hostFileStore.fileId) {
-        const items = [];
-        for (const idx of data.indices) {
-          if (idx >= 0 && idx < hostFileStore.totalChunks) {
-            const slice = hostFileStore.uint8.subarray(idx * CHUNK_SIZE, (idx + 1) * CHUNK_SIZE);
-            items.push({ idx, b64: uint8ToBase64(slice) });
-          }
-        }
-        if (items.length > 0) {
-          sendControlPacket({
-            type: 'CHUNK_BATCH',
-            fileId: hostFileStore.fileId,
-            items
-          }, false);
-        }
-        if (typeof data.receiverPct === 'number') {
-          document.getElementById('transferProgressWrap').style.display = 'block';
-          document.getElementById('transferProgressBar').style.width = data.receiverPct + '%';
-          document.getElementById('fileStatus').innerText =
-            `Syncing ${hostFileStore.name} to peer (${data.receiverPct}%)...`;
-        }
-      } else if (data.type === 'CHUNK_BATCH' && incomingMeta && data.fileId === incomingMeta.fileId) {
-        for (const item of data.items) {
-          onChunkReceived(item.idx, base64ToUint8Array(item.b64));
-        }
-        requestNextMissingChunks();
-      } else if (data.type === 'PEER_FILE_READY') {
-        document.getElementById('transferProgressBar').style.width = '100%';
-        setTimeout(() => {
-          document.getElementById('transferProgressWrap').style.display = 'none';
-        }, 500);
-        document.getElementById('fileStatus').innerText =
-          `✅ All devices synced (${data.name})! Press ▶ Play All to start.`;
       } else if (data.type === 'STATE_SYNC') {
         latestState = data.state;
         updateModeButtonsUI(latestState.mode);
-        if (latestState.fileMeta && loadedFileId !== latestState.fileMeta.fileId) {
-          checkAndStartFilePullIfNeeded(latestState.fileMeta);
-        }
         applyState(latestState);
       }
     }
@@ -689,195 +609,32 @@
     mqttPrimary.on('message', handleIncomingMqtt);
     mqttSecondary.on('message', handleIncomingMqtt);
 
-    function checkAndStartFilePullIfNeeded(fileMeta) {
-      if (!fileMeta || !fileMeta.fileId) return;
-      if (loadedFileId === fileMeta.fileId) return;
-      if (incomingMeta && incomingMeta.fileId === fileMeta.fileId) return;
-
-      incomingMeta = fileMeta;
-      incomingChunks = new Array(fileMeta.totalChunks);
-      receivedCount = 0;
-      isLocalAudioReady = false;
-
-      document.getElementById('transferProgressWrap').style.display = 'block';
-      document.getElementById('transferProgressBar').style.width = '0%';
-      document.getElementById('fileStatus').innerText =
-        `Syncing ${fileMeta.name} (0% - 0/${fileMeta.totalChunks})...`;
-
-      if (pullIntervalTimer) clearInterval(pullIntervalTimer);
-      requestNextMissingChunks();
-
-      pullIntervalTimer = setInterval(() => {
-        if (!incomingMeta || receivedCount >= incomingMeta.totalChunks) {
-          clearInterval(pullIntervalTimer);
-          return;
-        }
-        if (Date.now() - lastWebRtcChunkTime > 250) {
-          requestNextMissingChunks();
-        }
-      }, 300);
-    }
-
-    function requestNextMissingChunks() {
-      if (!incomingMeta || receivedCount >= incomingMeta.totalChunks) return;
-      const missing = [];
-      for (let i = 0; i < incomingMeta.totalChunks && missing.length < 3; i++) {
-        if (!incomingChunks[i]) missing.push(i);
-      }
-      if (missing.length > 0) {
-        const pct = Math.round((receivedCount / incomingMeta.totalChunks) * 100);
-        sendControlPacket({
-          type: 'PULL_CHUNKS',
-          fileId: incomingMeta.fileId,
-          indices: missing,
-          receiverPct: pct
-        }, false);
-      }
-    }
-
-    function onChunkReceived(idx, uint8Bytes) {
-      if (!incomingMeta || idx < 0 || idx >= incomingMeta.totalChunks) return;
-      if (!incomingChunks[idx]) {
-        incomingChunks[idx] = uint8Bytes;
-        receivedCount++;
-
-        const pct = Math.min(100, Math.round((receivedCount / incomingMeta.totalChunks) * 100));
-        document.getElementById('transferProgressBar').style.width = pct + '%';
-        document.getElementById('fileStatus').innerText =
-          `Syncing ${incomingMeta.name}: ${pct}% (${receivedCount}/${incomingMeta.totalChunks})`;
-
-        if (receivedCount === incomingMeta.totalChunks) {
-          finalizeIncomingFile();
-        }
-      }
-    }
-
-    function finalizeIncomingFile() {
-      if (!incomingMeta) return;
-      if (pullIntervalTimer) clearInterval(pullIntervalTimer);
-
-      const meta = incomingMeta;
-      incomingMeta = null;
-      loadedFileId = meta.fileId;
-
-      const blob = new Blob(incomingChunks, { type: meta.mime || 'audio/mpeg' });
-      incomingChunks = [];
-
-      if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
-      currentBlobUrl = URL.createObjectURL(blob);
-
-      initWebAudioGraph();
-      isLocalAudioReady = false;
-      audioEl.removeAttribute('crossorigin');
-      audioEl.src = currentBlobUrl;
-      audioEl.load();
-
-      audioEl.onloadedmetadata = () => {
-        isLocalAudioReady = true;
-        document.getElementById('transferProgressWrap').style.display = 'none';
-        sendControlPacket({
-          type: 'PEER_FILE_READY',
-          fileId: meta.fileId,
-          name: meta.name
-        }, true);
-
-        if (latestState && latestState.isPlaying && latestState.mode === 'LOCAL') {
-          document.getElementById('fileStatus').innerText = `🔊 Playing ${meta.name} (Synced Midway)`;
-          applyState(latestState);
-        } else {
-          document.getElementById('fileStatus').innerText =
-            `✅ Ready: ${meta.name} (100% Synced — Press ▶ Play All)`;
-        }
-      };
-    }
-
-    function uint8ToBase64(uint8) {
-      let binary = '';
-      const len = uint8.byteLength;
-      for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(uint8[i]);
-      }
-      return btoa(binary);
-    }
-
-    function base64ToUint8Array(b64) {
-      const binary = atob(b64);
-      const len = binary.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      return bytes;
-    }
-
-    // --- HOST FILE SELECTION (Stays Paused Until User Presses ▶ Play All) ---
     async function handleLocalFileSelect(event) {
       const file = event.target.files[0];
       if (!file) return;
-
       unlockAudioOnUserGesture();
       const arrayBuffer = await file.arrayBuffer();
       const uint8 = new Uint8Array(arrayBuffer);
       const totalChunks = Math.ceil(uint8.byteLength / CHUNK_SIZE);
       const fileId = 'f-' + Date.now();
-
-      hostFileStore = {
-        fileId,
-        name: file.name,
-        mime: file.type || 'audio/mpeg',
-        uint8,
-        totalChunks
-      };
       loadedFileId = fileId;
 
-      if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
-      currentBlobUrl = URL.createObjectURL(file);
-
-      isLocalAudioReady = false;
-      audioEl.removeAttribute('crossorigin');
-      audioEl.src = currentBlobUrl;
+      audioEl.src = URL.createObjectURL(file);
       audioEl.load();
       audioEl.pause();
       audioEl.currentTime = 0;
-      localSavedPos = 0;
-
-      audioEl.onloadedmetadata = () => {
-        isLocalAudioReady = true;
-      };
-
-      const fileMeta = {
-        fileId,
-        name: file.name,
-        mime: file.type || 'audio/mpeg',
-        totalChunks
-      };
 
       const now = getSyncedNow();
       latestState = {
         mode: 'LOCAL',
         videoId: loadedVideoId,
-        fileMeta,
         isPlaying: false,
         trackPosition: 0,
         startAt: now,
         updatedAt: now
       };
       updateModeButtonsUI('LOCAL');
-
-      document.getElementById('fileStatus').innerText =
-        `Loaded ${file.name} (Paused). Syncing to connected devices...`;
-
-      sendControlPacket({
-        type: 'FILE_ANNOUNCE',
-        fileMeta,
-        state: latestState
-      }, true);
-
-      Object.values(dataChannels).forEach(dc => {
-        if (dc.readyState === 'open') {
-          streamFileOverWebRTC(dc);
-        }
-      });
+      document.getElementById('fileStatus').innerText = `Loaded ${file.name} (Paused).`;
     }
 
     // --- MODE SWITCHER ---
@@ -896,25 +653,12 @@
 
     function switchMode(targetMode) {
       unlockAudioOnUserGesture();
-      if (latestState.mode === 'LOCAL' && targetMode === 'YT') {
-        localSavedPos = audioEl.currentTime || 0;
-        audioEl.pause();
-        const pos = (ytReady && player && player.getCurrentTime) ? (player.getCurrentTime() || ytSavedPos) : ytSavedPos;
-        broadcastState({ mode: 'YT', videoId: loadedVideoId, isPlaying: false, trackPosition: pos });
-      } else if (latestState.mode === 'YT' && targetMode === 'LOCAL') {
-        if (ytReady && player && player.getCurrentTime) {
-          ytSavedPos = player.getCurrentTime() || 0;
-          player.pauseVideo();
-        }
-        const pos = audioEl.currentTime || localSavedPos || 0;
-        broadcastState({ mode: 'LOCAL', isPlaying: false, trackPosition: pos });
-      }
+      broadcastState({ mode: targetMode, isPlaying: false, trackPosition: 0 });
     }
 
     // --- SCHEDULED COUNTDOWN PLAYBACK & SUB-5MS SYNC ENGINE ---
     function broadcastState(newState) {
       const now = getSyncedNow();
-      // Schedule future startAt (+450ms) when starting playback so all devices pre-seek & fire together!
       const startAt = newState.isPlaying ? (now + 450) : now;
       latestState = {
         ...latestState,
@@ -932,7 +676,7 @@
 
     function onYouTubeIframeAPIReady() {
       player = new YT.Player('player', {
-        height: '210',
+        height: '240',
         width: '100%',
         videoId: 'jfKfPfyJRdk',
         playerVars: { playsinline: 1, controls: 1, origin: window.location.origin },
@@ -943,8 +687,7 @@
           },
           onError: (e) => {
             document.getElementById('ytStatus').style.color = '#ff5252';
-            document.getElementById('ytStatus').innerText =
-              'YouTube Error ' + e.data + ': Official label video blocks embedding. Try a Lyric/Topic video or Local File.';
+            document.getElementById('ytStatus').innerText = 'YouTube Error ' + e.data + ': Try a Topic/Lyric video.';
           }
         }
       });
@@ -957,7 +700,7 @@
         scheduledStartTimer = null;
       }
 
-      updateModeButtonsUI(state.mode || 'LOCAL');
+      updateModeButtonsUI(state.mode || 'YT');
       const now = getSyncedNow();
       const refTime = state.startAt || state.updatedAt || now;
       const waitMs = refTime - now;
@@ -966,7 +709,7 @@
       if (state.mode === 'LOCAL') {
         if (ytReady && player && player.pauseVideo) player.pauseVideo();
         initWebAudioGraph();
-        if (!audioEl.src || !isLocalAudioReady) return;
+        if (!audioEl.src) return;
 
         audioEl.playbackRate = 1.0;
         smoothedDriftMs = 0;
@@ -977,7 +720,6 @@
           return;
         }
 
-        // Case 1: Scheduled future start (waitMs between 15ms and 1500ms) -> Pre-seek paused now, fire at exact refTime!
         if (waitMs > 15 && waitMs < 1500) {
           audioEl.pause();
           audioEl.currentTime = Math.max(0, state.trackPosition + (manualMs / 1000));
@@ -988,7 +730,6 @@
             });
           }, waitMs);
         } else {
-          // Case 2: Already past startAt (e.g., midway joiner or manual offset tweak) -> Seek to live position & play
           const elapsedSec = Math.max(0, (now - refTime) / 1000);
           const targetPos = Math.max(0, state.trackPosition + elapsedSec + (manualMs / 1000));
           if (Math.abs(audioEl.currentTime - targetPos) > 0.03) {
@@ -1024,60 +765,43 @@
           return;
         }
 
+        // UNMUTE AND PLAY EXPLICITLY ON HOST LAPTOP/PHONE
+        if (player.unMute) player.unMute();
+        if (player.setVolume) player.setVolume(100);
+
         if (waitMs > 15 && waitMs < 1500) {
           player.pauseVideo();
           player.seekTo(Math.max(0, state.trackPosition + (manualMs / 1000)), true);
           scheduledStartTimer = setTimeout(() => {
             playbackStartedAtLocalTime = Date.now();
             lastHardSeekTime = Date.now();
+            if (player.unMute) player.unMute();
+            if (player.setVolume) player.setVolume(100);
             player.playVideo();
           }, waitMs);
         } else {
           lastHardSeekTime = Date.now();
           playbackStartedAtLocalTime = Date.now();
           player.seekTo(targetPos, true);
+          if (player.unMute) player.unMute();
+          if (player.setVolume) player.setVolume(100);
           player.playVideo();
         }
       }
     }
 
-    // --- STABILIZED DRIFT MONITOR (1.5s Warmup + ±12ms Deadband so Android Resampler Never Glitches) ---
+    // Stabilized Drift Monitor
     setInterval(() => {
       if (!latestState || !latestState.isPlaying) return;
       const now = getSyncedNow();
       const refTime = latestState.startAt || latestState.updatedAt;
-      if (now < refTime) return; // Still in pre-start countdown
+      if (now < refTime) return;
 
       const elapsedSec = (now - refTime) / 1000;
       const manualMs = parseInt(document.getElementById('manualOffset').value || '0', 10);
       const expectedTime = latestState.trackPosition + elapsedSec + (manualMs / 1000);
 
-      if (latestState.mode === 'LOCAL') {
-        if (audioEl.paused || !isLocalAudioReady || audioEl.readyState < 2) return;
-        const actualTime = audioEl.currentTime;
-        const rawDriftMs = (actualTime - expectedTime) * 1000;
-        smoothedDriftMs = smoothedDriftMs * 0.65 + rawDriftMs * 0.35;
-        document.getElementById('driftDisplay').innerText = Math.round(smoothedDriftMs) + ' ms';
-
-        // Give mobile audio decoder 1.5s after play starts to settle before touching playbackRate
-        if (Date.now() - playbackStartedAtLocalTime < 1500) return;
-
-        if (Math.abs(smoothedDriftMs) > 180 && Date.now() - lastHardSeekTime > 2500) {
-          lastHardSeekTime = Date.now();
-          audioEl.playbackRate = 1.0;
-          audioEl.currentTime = expectedTime;
-          smoothedDriftMs = 0;
-        } else if (Math.abs(smoothedDriftMs) > 12) {
-          // Gentle 1% nudge only when drift exceeds 12ms
-          const targetRate = smoothedDriftMs > 0 ? 0.99 : 1.01;
-          if (audioEl.playbackRate !== targetRate) {
-            audioEl.playbackRate = targetRate;
-          }
-        } else if (audioEl.playbackRate !== 1.0) {
-          // Inside ±12ms deadband -> lock at 1.0x so pitch and phase stay rock-solid!
-          audioEl.playbackRate = 1.0;
-        }
-      } else if (latestState.mode === 'YT' && ytReady && player && player.getPlayerState) {
+      if (latestState.mode === 'YT' && ytReady && player && player.getPlayerState) {
         const ytState = player.getPlayerState();
         if (ytState !== 1) {
           document.getElementById('driftDisplay').innerText = (ytState === 3) ? 'Buffering...' : 'Tap YT Play';
@@ -1167,12 +891,6 @@
       const nextVal = Math.max(-120, Math.min(120, parseInt(slider.value || '0', 10) + deltaMs));
       slider.value = nextVal;
       document.getElementById('offsetVal').innerText = nextVal;
-      if (latestState && latestState.mode === 'LOCAL' && !audioEl.paused) {
-        const now = getSyncedNow();
-        const refTime = latestState.startAt || latestState.updatedAt;
-        const elapsedSec = Math.max(0, (now - refTime) / 1000);
-        audioEl.currentTime = Math.max(0, latestState.trackPosition + elapsedSec + (nextVal / 1000));
-      }
     }
 
     function setRole(role) {
