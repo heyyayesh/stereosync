@@ -1,0 +1,16 @@
+{
+  "name": "yt-music-stereo-sync",
+  "version": "2.0.0",
+  "description": "Local Wi-Fi stereo audio synchronizer for Android APKs and laptops",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

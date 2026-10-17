@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stereo Sync - Local File & YT Music</title>
+  <link rel="manifest" href="/manifest.json" />
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f0f0f;
+      color: #fff;
+      max-width: 540px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+    .card {
+      background: #1c1c1c;
+      border: 1px solid #2c2c2c;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    .row { display: flex; gap: 8px; margin-top: 8px; }
+    input[type="text"], input[type="file"] {
+      flex: 1;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid #3a3a3a;
+      background: #111;
+      color: #fff;
+      width: 100%;
+    }
+    button {
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: none;
+      background: #ff0033;
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.secondary { background: #333; }
+    button.active { background: #00c853; }
+    .row button { flex: 1; }
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: #292929;
+      font-family: monospace;
+      font-size: 0.9rem;
+      color: #00e676;
+    }
+    .metrics {
+      font-family: monospace;
+      font-size: 0.82rem;
+      color: #aaa;
+      display: flex;
+      justify-content: space-between;
+    }
+    audio {
+      width: 100%;
+      margin-top: 10px;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h2 style="margin-top:0;">Stereo Sync: Local File & YT</h2>
+
+  <div class="card">
+    <strong>1. Local Wi-Fi Connection Status:</strong>
+    <div style="margin-top:8px; font-size:0.9rem;">
+      Status: <span class="badge" id="connStatus">Connecting to server...</span>
+    </div>
+    <div id="lanBanner" style="display:none; margin-top:6px; font-size:0.82rem; color:#64b5f6;">
+      Fast LAN Server: <span id="lanUrlText"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <strong>2A. Play Local Audio File (Instant LAN Stream):</strong>
+    <div style="margin-top:8px;">
+      <input type="file" id="audioFileInput" accept="audio/*" onchange="handleLocalFileSelect(event)" />
+    </div>
+    <div id="fileStatus" style="font-size:0.82rem; color:#00e676; margin-top:6px;">
+      Pick an MP3/WAV/FLAC file on ANY device to stream to all connected devices.
+    </div>
+    <audio id="localAudioPlayer" crossorigin="anonymous" controls playsinline></audio>
+  </div>
+
+  <div class="card">
+    <strong>2B. Or Load YouTube Music Link:</strong>
+    <div class="row">
+      <input type="text" id="ytInput" placeholder="https://music.youtube.com/watch?v=..." />
+      <button onclick="loadTrack()">Load YT</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <strong>3. Speaker Channel Role (Auto-Isolated):</strong>
+    <div class="row">
+      <button id="btnL" class="secondary" onclick="setRole('LEFT')">Left Speaker</button>
+      <button id="btnR" class="secondary" onclick="setRole('RIGHT')">Right Speaker</button>
+      <button id="btnS" class="active" onclick="setRole('STEREO')">Both (Stereo)</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <strong>4. Synced Transport & Acoustic Alignment:</strong>
+    <div class="row">
+      <button onclick="broadcastPlay()">Play All</button>
+      <button class="secondary" onclick="broadcastPause()">Pause All</button>
+      <button class="secondary" onclick="resyncNow()">Force Resync</button>
+    </div>
+    <div style="margin-top:12px; font-size:0.88rem;">
+      Acoustic Delay Fine-Tune (<span id="offsetVal">0</span> ms):
+      <input type="range" id="manualOffset" min="-150" max="150" value="0" style="width:100%"
+             oninput="document.getElementById('offsetVal').innerText = this.value; resyncNow();" />
+    </div>
+  </div>
+
+  <div class="card metrics">
+    <span>Mode: <strong id="modeDisplay">LOCAL</strong></span>
+    <span>Clock Offset: <strong id="clockOffset">0 ms</strong></span>
+    <span>Drift: <strong id="driftDisplay">0 ms</strong></span>
+  </div>
+
+  <div id="player"></div>
+
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script>
+    const socket = io();
+    let player;
+    const audioEl = document.getElementById('localAudioPlayer');
+    let clockOffset = 0;
+    let currentRole = 'STEREO';
+    let lanServerBaseUrl = null;
+    let latestState = null;
+
+    fetch('/api/lan-info')
+      .then(r => r.json())
+      .then(info => {
+        if (info && info.ip) {
+          lanServerBaseUrl = `http://${info.ip}:${info.port}`;
+          document.getElementById('lanBanner').style.display = 'block';
+          document.getElementById('lanUrlText').innerText = lanServerBaseUrl;
+        }
+      })
+      .catch(() => {});
+
+    let audioCtx = null;
+    let sourceNode = null;
+    let splitterNode = null;
+    let leftGain = null;
+    let rightGain = null;
+    let mergerNode = null;
+
+    function initWebAudioGraph() {
+      if (audioCtx) {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        return;
+      }
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AudioContextClass();
+      sourceNode = audioCtx.createMediaElementSource(audioEl);
+      splitterNode = audioCtx.createChannelSplitter(2);
+      leftGain = audioCtx.createGain();
+      rightGain = audioCtx.createGain();
+      mergerNode = audioCtx.createChannelMerger(2);
+
+      sourceNode.connect(splitterNode);
+      splitterNode.connect(leftGain, 0);
+      splitterNode.connect(rightGain, 1);
+
+      updateWebAudioRouting();
+      mergerNode.connect(audioCtx.destination);
+    }
+
+    function updateWebAudioRouting() {
+      if (!audioCtx || !leftGain || !rightGain || !mergerNode) return;
+      leftGain.disconnect();
+      rightGain.disconnect();
+
+      if (currentRole === 'LEFT') {
+        leftGain.gain.value = 1.0;
+        rightGain.gain.value = 0.0;
+        leftGain.connect(mergerNode, 0, 0);
+        leftGain.connect(mergerNode, 0, 1);
+      } else if (currentRole === 'RIGHT') {
+        leftGain.gain.value = 0.0;
+        rightGain.gain.value = 1.0;
+        leftGain.connect(mergerNode, 0, 0);
+        leftGain.connect(mergerNode, 0, 1);
+      } else {
+        leftGain.gain.value = 1.0;
+        rightGain.gain.value = 1.0;
+        leftGain.connect(mergerNode, 0, 0);
+        leftGain.connect(mergerNode, 0, 1);
+      }
+    }
+
+    socket.on('connect', () => {
+      document.getElementById('connStatus').style.color = '#00e676';
+      document.getElementById('connStatus').innerText = 'Connected to Local Hub!';
+      setInterval(() => {
+        socket.emit('ntp_ping', Date.now());
+      }, 2000);
+    });
+
+    let samples = [];
+    socket.on('ntp_pong', ({ clientSendTime, serverTime }) => {
+      const now = Date.now();
+      const rtt = now - clientSendTime;
+      const estimatedOffset = serverTime - (clientSendTime + rtt / 2);
+      samples.push(estimatedOffset);
+      if (samples.length > 5) samples.shift();
+      clockOffset = Math.round(samples.reduce((a, b) => a + b, 0) / samples.length);
+      document.getElementById('clockOffset').innerText = clockOffset + ' ms (RTT ' + rtt + 'ms)';
+    });
+
+    socket.on('state_sync', (state) => {
+      latestState = state;
+      applyState(state);
+    });
+
+    async function handleLocalFileSelect(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      initWebAudioGraph();
+      const baseUrl = lanServerBaseUrl || (window.location.protocol + '//' + window.location.host);
+
+      document.getElementById('fileStatus').innerText = 'Uploading ' + file.name + ' to server...';
+      try {
+        const uploadRes = await fetch(baseUrl + '/api/upload', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-File-Name': encodeURIComponent(file.name),
+            'X-Mime-Type': file.type || 'audio/mpeg'
+          },
+          body: file
+        });
+        if (uploadRes.ok) {
+          const { streamUrl, name } = await uploadRes.json();
+          document.getElementById('fileStatus').innerText = 'Ready: ' + name + ' (Synced)';
+          audioEl.src = streamUrl;
+          audioEl.load();
+          socket.emit('update_state', {
+            mode: 'LOCAL',
+            streamUrl: streamUrl,
+            isPlaying: false,
+            trackPosition: 0
+          });
+        }
+      } catch (err) {
+        document.getElementById('fileStatus').innerText = 'Upload failed. Check Wi-Fi connection.';
+      }
+    }
+
+    function onYouTubeIframeAPIReady() {
+      player = new YT.Player('player', {
+        height: '200',
+        width: '100%',
+        videoId: 'jfKfPfyJRdk',
+        playerVars: { playsinline: 1, controls: 1 }
+      });
+    }
+
+    function applyState(state) {
+      document.getElementById('modeDisplay').innerText = state.mode || 'LOCAL';
+      const syncedNow = Date.now() + clockOffset;
+      const elapsedSec = (syncedNow - state.updatedAt) / 1000;
+      const manualMs = parseInt(document.getElementById('manualOffset').value || '0', 10);
+      const targetPos = Math.max(0, state.trackPosition + (state.isPlaying ? elapsedSec : 0) + (manualMs / 1000));
+
+      if (state.mode === 'LOCAL') {
+        if (player && player.pauseVideo) player.pauseVideo();
+        initWebAudioGraph();
+        if (state.streamUrl && audioEl.src !== state.streamUrl) {
+          audioEl.src = state.streamUrl;
+          audioEl.load();
+        }
+        if (state.isPlaying) {
+          audioEl.currentTime = targetPos;
+          audioEl.play().catch(() => {});
+        } else {
+          audioEl.pause();
+          audioEl.currentTime = state.trackPosition;
+        }
+      } else {
+        audioEl.pause();
+        if (!player || !player.seekTo) return;
+        const currentVid = player.getVideoData ? player.getVideoData().video_id : '';
+        if (currentVid !== state.videoId) {
+          player.loadVideoById(state.videoId, targetPos);
+        }
+        if (state.isPlaying) {
+          player.seekTo(targetPos, true);
+          player.playVideo();
+        } else {
+          player.pauseVideo();
+          player.seekTo(state.trackPosition, true);
+        }
+      }
+    }
+
+    setInterval(() => {
+      if (!latestState || !latestState.isPlaying) return;
+      const syncedNow = Date.now() + clockOffset;
+      const elapsedSec = (syncedNow - latestState.updatedAt) / 1000;
+      const manualMs = parseInt(document.getElementById('manualOffset').value || '0', 10);
+      const expectedTime = latestState.trackPosition + elapsedSec + (manualMs / 1000);
+
+      if (latestState.mode === 'LOCAL') {
+        if (audioEl.paused) return;
+        const actualTime = audioEl.currentTime;
+        const driftMs = Math.round((actualTime - expectedTime) * 1000);
+        document.getElementById('driftDisplay').innerText = driftMs + ' ms';
+
+        if (Math.abs(driftMs) > 250) {
+          audioEl.currentTime = expectedTime;
+        } else if (driftMs > 15) {
+          audioEl.playbackRate = 0.97;
+        } else if (driftMs < -15) {
+          audioEl.playbackRate = 1.03;
+        } else {
+          audioEl.playbackRate = 1.0;
+        }
+      } else if (player && player.getCurrentTime) {
+        const actualTime = player.getCurrentTime();
+        const driftMs = Math.round((actualTime - expectedTime) * 1000);
+        document.getElementById('driftDisplay').innerText = driftMs + ' ms';
+
+        if (Math.abs(driftMs) > 300) {
+          player.seekTo(expectedTime, true);
+        } else if (driftMs > 22) {
+          player.setPlaybackRate(0.95);
+        } else if (driftMs < -22) {
+          player.setPlaybackRate(1.05);
+        } else {
+          player.setPlaybackRate(1.0);
+        }
+      }
+    }, 400);
+
+    function extractVideoId(input) {
+      try {
+        const url = new URL(input);
+        return url.searchParams.get('v') || input.trim();
+      } catch {
+        return input.trim();
+      }
+    }
+
+    function loadTrack() {
+      const vid = extractVideoId(document.getElementById('ytInput').value);
+      if (vid) {
+        socket.emit('update_state', { mode: 'YT', videoId: vid, trackPosition: 0, isPlaying: true });
+      }
+    }
+
+    function broadcastPlay() {
+      initWebAudioGraph();
+      let pos = 0;
+      if (latestState && latestState.mode === 'LOCAL') {
+        pos = audioEl.currentTime || 0;
+      } else if (player && player.getCurrentTime) {
+        pos = player.getCurrentTime();
+      }
+      socket.emit('update_state', { isPlaying: true, trackPosition: pos });
+    }
+
+    function broadcastPause() {
+      let pos = 0;
+      if (latestState && latestState.mode === 'LOCAL') {
+        pos = audioEl.currentTime || 0;
+      } else if (player && player.getCurrentTime) {
+        pos = player.getCurrentTime();
+      }
+      socket.emit('update_state', { isPlaying: false, trackPosition: pos });
+    }
+
+    function resyncNow() {
+      if (latestState) applyState(latestState);
+    }
+
+    function setRole(role) {
+      currentRole = role;
+      ['btnL', 'btnR', 'btnS'].forEach(id => document.getElementById(id).className = 'secondary');
+      if (role === 'LEFT') document.getElementById('btnL').className = 'active';
+      if (role === 'RIGHT') document.getElementById('btnR').className = 'active';
+      if (role === 'STEREO') document.getElementById('btnS').className = 'active';
+      initWebAudioGraph();
+      updateWebAudioRouting();
+    }
+  </script>
+</body>
+</html>

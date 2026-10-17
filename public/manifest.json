@@ -1,0 +1,9 @@
+{
+  "short_name": "YT Stereo",
+  "name": "YT Music Stereo Sync",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "background_color": "#0f0f0f",
+  "theme_color": "#ff0033",
+  "orientation": "portrait"
+}

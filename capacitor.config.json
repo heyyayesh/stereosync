@@ -1,0 +1,13 @@
+{
+  "appId": "com.stereosync.ytmusic",
+  "appName": "YT Stereo Sync",
+  "webDir": "public",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true,
+    "allowNavigation": [
+      "*"
+    ]
+  }
+}
