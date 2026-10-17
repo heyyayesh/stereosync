@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Stereo Sync - Local File & YT Music</title>
+  <title>Stereo Sync - Phone-to-Phone & YT</title>
   <link rel="manifest" href="/manifest.json" />
-  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -32,6 +32,7 @@
       background: #111;
       color: #fff;
       width: 100%;
+      font-size: 1rem;
     }
     button {
       padding: 10px 14px;
@@ -47,12 +48,40 @@
     .row button { flex: 1; }
     .badge {
       display: inline-block;
-      padding: 4px 8px;
+      padding: 4px 10px;
       border-radius: 6px;
       background: #292929;
       font-family: monospace;
-      font-size: 0.9rem;
+      font-size: 1.05rem;
+      font-weight: 700;
       color: #00e676;
+      letter-spacing: 1px;
+    }
+    .unlock-banner {
+      display: none;
+      background: #00c853;
+      color: #000;
+      font-weight: 700;
+      text-align: center;
+      padding: 12px;
+      border-radius: 10px;
+      margin-bottom: 14px;
+      cursor: pointer;
+    }
+    .progress-wrap {
+      width: 100%;
+      background: #111;
+      border-radius: 6px;
+      height: 10px;
+      margin-top: 10px;
+      overflow: hidden;
+      display: none;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: #00e676;
+      transition: width 0.15s;
     }
     .metrics {
       font-family: monospace;
@@ -69,39 +98,57 @@
   </style>
 </head>
 <body>
-  <h2 style="margin-top:0;">Stereo Sync: Local File & YT</h2>
+  <h2 style="margin-top:0;">Stereo Sync (No Laptop Needed)</h2>
 
+  <div id="unlockBanner" class="unlock-banner" onclick="unlockMobileAudio()">
+    TAP HERE ONCE TO UNLOCK MOBILE AUDIO PLAYBACK
+  </div>
+
+  <!-- 1. 4-Digit Room Code (Works Phone-to-Phone inside APK & Browser) -->
   <div class="card">
-    <strong>1. Local Wi-Fi Connection Status:</strong>
-    <div style="margin-top:8px; font-size:0.9rem;">
-      Status: <span class="badge" id="connStatus">Connecting to server...</span>
+    <strong>1. Connect Phones / Devices (4-Digit Room Code):</strong>
+    <div style="margin-top:8px; font-size:0.95rem;">
+      This Device's Room Code: <span class="badge" id="myRoomId">----</span>
     </div>
-    <div id="lanBanner" style="display:none; margin-top:6px; font-size:0.82rem; color:#64b5f6;">
-      Fast LAN Server: <span id="lanUrlText"></span>
+    <div class="row">
+      <input type="text" id="joinRoomInput" placeholder="Enter other phone's 4-digit code (e.g. 4821)" maxlength="9" />
+      <button onclick="joinRoom()">Join Room</button>
+    </div>
+    <div id="connStatus" style="font-size:0.85rem; color:#ffab00; margin-top:8px;">
+      Connecting to sync network...
     </div>
   </div>
 
+  <!-- 2A. Local Audio File Sync (Phone-to-Phone Direct Transfer) -->
   <div class="card">
-    <strong>2A. Play Local Audio File (Instant LAN Stream):</strong>
+    <strong>2A. Play Local Audio File (Phone-to-Phone Sync):</strong>
     <div style="margin-top:8px;">
       <input type="file" id="audioFileInput" accept="audio/*" onchange="handleLocalFileSelect(event)" />
     </div>
+    <div class="progress-wrap" id="transferProgressWrap">
+      <div class="progress-bar" id="transferProgressBar"></div>
+    </div>
     <div id="fileStatus" style="font-size:0.82rem; color:#00e676; margin-top:6px;">
-      Pick an MP3/WAV/FLAC file on ANY device to stream to all connected devices.
+      Join the same 4-digit Room Code, then pick an audio file on ONE phone.
     </div>
     <audio id="localAudioPlayer" crossorigin="anonymous" controls playsinline></audio>
   </div>
 
+  <!-- 2B. YouTube Music Sync -->
   <div class="card">
-    <strong>2B. Or Load YouTube Music Link:</strong>
+    <strong>2B. Or Load YouTube Music Link / Video ID:</strong>
     <div class="row">
-      <input type="text" id="ytInput" placeholder="https://music.youtube.com/watch?v=..." />
+      <input type="text" id="ytInput" placeholder="https://music.youtube.com/watch?v=jfKfPfyJRdk" />
       <button onclick="loadTrack()">Load YT</button>
+    </div>
+    <div id="ytStatus" style="font-size:0.8rem; color:#aaa; margin-top:6px;">
+      Tip: Use Lyric/Topic videos if an official music video blocks embedded playback.
     </div>
   </div>
 
+  <!-- 3. Speaker Channel Role -->
   <div class="card">
-    <strong>3. Speaker Channel Role (Auto-Isolated):</strong>
+    <strong>3. Speaker Channel Role (Auto-Isolated for Local Files):</strong>
     <div class="row">
       <button id="btnL" class="secondary" onclick="setRole('LEFT')">Left Speaker</button>
       <button id="btnR" class="secondary" onclick="setRole('RIGHT')">Right Speaker</button>
@@ -109,8 +156,9 @@
     </div>
   </div>
 
+  <!-- 4. Synced Transport & Acoustic Calibration -->
   <div class="card">
-    <strong>4. Synced Transport & Acoustic Alignment:</strong>
+    <strong>4. Synced Playback & Acoustic Alignment:</strong>
     <div class="row">
       <button onclick="broadcastPlay()">Play All</button>
       <button class="secondary" onclick="broadcastPause()">Pause All</button>
@@ -133,25 +181,29 @@
 
   <script src="https://www.youtube.com/iframe_api"></script>
   <script>
-    const socket = io();
-    let player;
+    let player = null;
+    let ytReady = false;
+    let loadedVideoId = '';
+    let lastHardSeekTime = 0;
+
     const audioEl = document.getElementById('localAudioPlayer');
     let clockOffset = 0;
     let currentRole = 'STEREO';
-    let lanServerBaseUrl = null;
-    let latestState = null;
 
-    fetch('/api/lan-info')
-      .then(r => r.json())
-      .then(info => {
-        if (info && info.ip) {
-          lanServerBaseUrl = `http://${info.ip}:${info.port}`;
-          document.getElementById('lanBanner').style.display = 'block';
-          document.getElementById('lanUrlText').innerText = lanServerBaseUrl;
-        }
-      })
-      .catch(() => {});
+    const myClientId = 'dev-' + Math.random().toString(36).substring(2, 9);
+    const myShortCode = String(Math.floor(1000 + Math.random() * 9000));
+    let activeRoomCode = myShortCode;
+    const topicPrefix = 'yt-stereo-p2p-v5/';
 
+    let latestState = {
+      mode: 'LOCAL',
+      videoId: 'jfKfPfyJRdk',
+      isPlaying: false,
+      trackPosition: 0,
+      updatedAt: Date.now()
+    };
+
+    // --- WEB AUDIO API TRUE LEFT/RIGHT CHANNEL ISOLATION ---
     let audioCtx = null;
     let sourceNode = null;
     let splitterNode = null;
@@ -193,115 +245,354 @@
       } else if (currentRole === 'RIGHT') {
         leftGain.gain.value = 0.0;
         rightGain.gain.value = 1.0;
-        leftGain.connect(mergerNode, 0, 0);
-        leftGain.connect(mergerNode, 0, 1);
+        rightGain.connect(mergerNode, 0, 0);
+        rightGain.connect(mergerNode, 0, 1);
       } else {
         leftGain.gain.value = 1.0;
         rightGain.gain.value = 1.0;
         leftGain.connect(mergerNode, 0, 0);
-        leftGain.connect(mergerNode, 0, 1);
+        rightGain.connect(mergerNode, 0, 1);
       }
     }
 
-    socket.on('connect', () => {
-      document.getElementById('connStatus').style.color = '#00e676';
-      document.getElementById('connStatus').innerText = 'Connected to Local Hub!';
-      setInterval(() => {
-        socket.emit('ntp_ping', Date.now());
-      }, 2000);
+    function unlockMobileAudio() {
+      initWebAudioGraph();
+      document.getElementById('unlockBanner').style.display = 'none';
+      if (latestState) applyState(latestState);
+    }
+
+    // --- ZERO-CONFIG 4-DIGIT ROOM ENGINE (Works between 2 APKs without a laptop) ---
+    const statusEl = document.getElementById('connStatus');
+    document.getElementById('myRoomId').innerText = myShortCode;
+
+    const mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', {
+      clientId: myClientId,
+      clean: true,
+      reconnectPeriod: 1500
     });
 
-    let samples = [];
-    socket.on('ntp_pong', ({ clientSendTime, serverTime }) => {
-      const now = Date.now();
-      const rtt = now - clientSendTime;
-      const estimatedOffset = serverTime - (clientSendTime + rtt / 2);
-      samples.push(estimatedOffset);
-      if (samples.length > 5) samples.shift();
-      clockOffset = Math.round(samples.reduce((a, b) => a + b, 0) / samples.length);
-      document.getElementById('clockOffset').innerText = clockOffset + ' ms (RTT ' + rtt + 'ms)';
+    mqttClient.on('connect', () => {
+      mqttClient.subscribe(topicPrefix + activeRoomCode, { qos: 0 });
+      statusEl.style.color = '#00e676';
+      statusEl.innerText = 'Ready! Room Code: ' + activeRoomCode + ' (Waiting for other phone...)';
     });
 
-    socket.on('state_sync', (state) => {
-      latestState = state;
-      applyState(state);
+    function publishMsg(payload) {
+      payload.senderId = myClientId;
+      mqttClient.publish(topicPrefix + activeRoomCode, JSON.stringify(payload), { qos: 0 });
+    }
+
+    let ntpTimer = null;
+    function joinRoom() {
+      let raw = document.getElementById('joinRoomInput').value.trim().toUpperCase().replace('SYNC-', '');
+      if (!raw) return;
+
+      mqttClient.unsubscribe(topicPrefix + activeRoomCode);
+      activeRoomCode = raw;
+      document.getElementById('myRoomId').innerText = activeRoomCode;
+      statusEl.style.color = '#ffab00';
+      statusEl.innerText = 'Joining Room ' + activeRoomCode + '...';
+
+      mqttClient.subscribe(topicPrefix + activeRoomCode, { qos: 0 }, (err) => {
+        if (!err) {
+          publishMsg({ type: 'HELLO' });
+          if (ntpTimer) clearInterval(ntpTimer);
+          ntpTimer = setInterval(() => {
+            publishMsg({ type: 'NTP_PING', clientSendTime: Date.now() });
+          }, 2000);
+        }
+      });
+    }
+
+    // --- NON-BLOCKING SLIDING WINDOW FILE TRANSFER ENGINE (Never hangs on 10MB+ files) ---
+    let incomingMeta = null;
+    let incomingChunks = [];
+    let receivedCount = 0;
+    let windowAckResolver = null;
+    let rttSamples = [];
+
+    mqttClient.on('message', (topic, messageBuffer) => {
+      let data;
+      try {
+        data = JSON.parse(messageBuffer.toString());
+      } catch {
+        return;
+      }
+      if (data.senderId === myClientId) return;
+
+      if (data.type === 'HELLO') {
+        statusEl.style.color = '#00e676';
+        statusEl.innerText = 'Connected! Devices paired in Room ' + activeRoomCode;
+        publishMsg({ type: 'WELCOME', state: latestState });
+      } else if (data.type === 'WELCOME') {
+        statusEl.style.color = '#00e676';
+        statusEl.innerText = 'Connected! Devices paired in Room ' + activeRoomCode;
+        latestState = data.state;
+        applyState(latestState);
+        publishMsg({ type: 'NTP_PING', clientSendTime: Date.now() });
+      } else if (data.type === 'NTP_PING') {
+        publishMsg({
+          type: 'NTP_PONG',
+          targetId: data.senderId,
+          clientSendTime: data.clientSendTime,
+          serverTime: Date.now()
+        });
+      } else if (data.type === 'NTP_PONG' && data.targetId === myClientId) {
+        const now = Date.now();
+        const rtt = now - data.clientSendTime;
+        const offset = data.serverTime - (data.clientSendTime + rtt / 2);
+        rttSamples.push(offset);
+        if (rttSamples.length > 5) rttSamples.shift();
+        clockOffset = Math.round(rttSamples.reduce((a, b) => a + b, 0) / rttSamples.length);
+        document.getElementById('clockOffset').innerText = clockOffset + ' ms (RTT ' + rtt + 'ms)';
+      } else if (data.type === 'FILE_INIT') {
+        incomingMeta = data;
+        incomingChunks = new Array(data.totalChunks);
+        receivedCount = 0;
+        document.getElementById('transferProgressWrap').style.display = 'block';
+        document.getElementById('transferProgressBar').style.width = '0%';
+        document.getElementById('fileStatus').innerText = 'Receiving ' + data.name + ' (0%)...';
+        publishMsg({ type: 'FILE_INIT_ACK', fileId: data.fileId });
+      } else if (data.type === 'FILE_INIT_ACK') {
+        if (windowAckResolver) windowAckResolver({ type: 'INIT_ACK' });
+      } else if (data.type === 'WINDOW_DATA' && incomingMeta && data.fileId === incomingMeta.fileId) {
+        // Store every chunk in this window
+        for (const item of data.chunks) {
+          if (!incomingChunks[item.idx]) {
+            incomingChunks[item.idx] = base64ToUint8Array(item.b64);
+            receivedCount++;
+          }
+        }
+        // Check if any chunks in [windowStart .. windowEnd - 1] were dropped
+        const missing = [];
+        for (let i = data.windowStart; i < data.windowEnd; i++) {
+          if (!incomingChunks[i]) missing.push(i);
+        }
+
+        const pct = Math.min(100, Math.round((receivedCount / incomingMeta.totalChunks) * 100));
+        document.getElementById('transferProgressBar').style.width = pct + '%';
+        document.getElementById('fileStatus').innerText =
+          `Receiving ${incomingMeta.name}: ${pct}% (${receivedCount}/${incomingMeta.totalChunks})`;
+
+        // Reply to sender with exact missing list (empty array = 100% of window received!)
+        publishMsg({
+          type: 'WINDOW_REPORT',
+          fileId: incomingMeta.fileId,
+          windowStart: data.windowStart,
+          missing: missing
+        });
+
+        if (receivedCount === incomingMeta.totalChunks) {
+          finalizeReceivedAudio();
+        }
+      } else if (data.type === 'WINDOW_REPORT') {
+        if (windowAckResolver) windowAckResolver(data);
+      } else if (data.type === 'FILE_COMPLETE') {
+        document.getElementById('fileStatus').innerText = 'Other phone buffered 100%! Tap Play All.';
+      } else if (data.type === 'STATE_SYNC') {
+        latestState = data.state;
+        applyState(latestState);
+      }
     });
 
+    function finalizeReceivedAudio() {
+      if (!incomingMeta) return;
+      const blob = new Blob(incomingChunks, { type: incomingMeta.mime || 'audio/mpeg' });
+      const url = URL.createObjectURL(blob);
+      audioEl.src = url;
+      audioEl.load();
+      document.getElementById('fileStatus').innerText = '100% Ready: ' + incomingMeta.name;
+      setTimeout(() => {
+        document.getElementById('transferProgressWrap').style.display = 'none';
+      }, 1000);
+      publishMsg({ type: 'FILE_COMPLETE', fileId: incomingMeta.fileId });
+      incomingMeta = null;
+    }
+
+    function uint8ToBase64(uint8) {
+      let binary = '';
+      const len = uint8.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(uint8[i]);
+      }
+      return btoa(binary);
+    }
+
+    function base64ToUint8Array(b64) {
+      const binary = atob(b64);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    }
+
+    function waitForReceiverResponse(timeoutMs) {
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          windowAckResolver = null;
+          resolve(null);
+        }, timeoutMs);
+        windowAckResolver = (data) => {
+          clearTimeout(timer);
+          windowAckResolver = null;
+          resolve(data);
+        };
+      });
+    }
+
+    // --- ZERO-DROP SELECTIVE-REPEAT SENDER FOR 10MB+ AUDIO FILES ---
     async function handleLocalFileSelect(event) {
       const file = event.target.files[0];
       if (!file) return;
 
       initWebAudioGraph();
-      const baseUrl = lanServerBaseUrl || (window.location.protocol + '//' + window.location.host);
+      audioEl.src = URL.createObjectURL(file);
+      audioEl.load();
 
-      document.getElementById('fileStatus').innerText = 'Uploading ' + file.name + ' to server...';
-      try {
-        const uploadRes = await fetch(baseUrl + '/api/upload', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/octet-stream',
-            'X-File-Name': encodeURIComponent(file.name),
-            'X-Mime-Type': file.type || 'audio/mpeg'
-          },
-          body: file
+      latestState.mode = 'LOCAL';
+      latestState.isPlaying = false;
+      latestState.trackPosition = 0;
+      document.getElementById('modeDisplay').innerText = 'LOCAL';
+
+      const arrayBuffer = await file.arrayBuffer();
+      const uint8 = new Uint8Array(arrayBuffer);
+      const chunkSize = 24576; // 24KB per chunk
+      const totalChunks = Math.ceil(uint8.byteLength / chunkSize);
+      const windowSize = 8;    // 8 chunks (~192KB) per verified window
+      const fileId = 'f-' + Date.now();
+
+      document.getElementById('transferProgressWrap').style.display = 'block';
+      document.getElementById('transferProgressBar').style.width = '0%';
+      document.getElementById('fileStatus').innerText = 'Handshaking with other phone...';
+
+      // Step 1: Handshake FILE_INIT until receiver confirms it is ready
+      let initConfirmed = false;
+      for (let tries = 0; tries < 6 && !initConfirmed; tries++) {
+        publishMsg({
+          type: 'FILE_INIT',
+          fileId,
+          name: file.name,
+          mime: file.type || 'audio/mpeg',
+          totalChunks
         });
-        if (uploadRes.ok) {
-          const { streamUrl, name } = await uploadRes.json();
-          document.getElementById('fileStatus').innerText = 'Ready: ' + name + ' (Synced)';
-          audioEl.src = streamUrl;
-          audioEl.load();
-          socket.emit('update_state', {
-            mode: 'LOCAL',
-            streamUrl: streamUrl,
-            isPlaying: false,
-            trackPosition: 0
-          });
-        }
-      } catch (err) {
-        document.getElementById('fileStatus').innerText = 'Upload failed. Check Wi-Fi connection.';
+        const resp = await waitForReceiverResponse(1200);
+        if (resp && resp.type === 'INIT_ACK') initConfirmed = true;
       }
+
+      if (!initConfirmed) {
+        document.getElementById('fileStatus').innerText =
+          'Loaded locally! (Join the same 4-digit Room Code on another phone first to beam file)';
+        return;
+      }
+
+      // Step 2: Send file in verified windows; re-send ONLY missing chunks if any drop
+      for (let wStart = 0; wStart < totalChunks; wStart += windowSize) {
+        const wEnd = Math.min(totalChunks, wStart + windowSize);
+        let indicesToSend = [];
+        for (let i = wStart; i < wEnd; i++) indicesToSend.push(i);
+
+        while (indicesToSend.length > 0) {
+          const chunksPayload = indicesToSend.map(idx => {
+            const slice = uint8.subarray(idx * chunkSize, (idx + 1) * chunkSize);
+            return { idx, b64: uint8ToBase64(slice) };
+          });
+
+          publishMsg({
+            type: 'WINDOW_DATA',
+            fileId,
+            windowStart: wStart,
+            windowEnd: wEnd,
+            chunks: chunksPayload
+          });
+
+          const report = await waitForReceiverResponse(1800);
+          if (report && report.type === 'WINDOW_REPORT' && report.windowStart === wStart) {
+            indicesToSend = report.missing || [];
+          }
+        }
+
+        const pct = Math.round((wEnd / totalChunks) * 100);
+        document.getElementById('transferProgressBar').style.width = pct + '%';
+        document.getElementById('fileStatus').innerText =
+          `Syncing ${file.name} to other phone: ${pct}%`;
+      }
+
+      document.getElementById('fileStatus').innerText = '100% Synced to both phones! Tap Play All.';
+    }
+
+    // --- YOUTUBE & LOCAL PLAYBACK SYNC ENGINE ---
+    function broadcastState(newState) {
+      latestState = { ...latestState, ...newState, updatedAt: Date.now() + clockOffset };
+      applyState(latestState);
+      publishMsg({ type: 'STATE_SYNC', state: latestState });
     }
 
     function onYouTubeIframeAPIReady() {
       player = new YT.Player('player', {
-        height: '200',
+        height: '210',
         width: '100%',
         videoId: 'jfKfPfyJRdk',
-        playerVars: { playsinline: 1, controls: 1 }
+        playerVars: { playsinline: 1, controls: 1, origin: window.location.origin },
+        events: {
+          onReady: () => {
+            ytReady = true;
+            loadedVideoId = 'jfKfPfyJRdk';
+          },
+          onError: (e) => {
+            document.getElementById('ytStatus').style.color = '#ff5252';
+            document.getElementById('ytStatus').innerText =
+              'YouTube Error ' + e.data + ': Official label video blocks embedding. Try a Lyric/Topic version or Local File.';
+          }
+        }
       });
     }
 
     function applyState(state) {
+      if (!state) return;
       document.getElementById('modeDisplay').innerText = state.mode || 'LOCAL';
       const syncedNow = Date.now() + clockOffset;
-      const elapsedSec = (syncedNow - state.updatedAt) / 1000;
+      const elapsedSec = Math.max(0, (syncedNow - state.updatedAt) / 1000);
       const manualMs = parseInt(document.getElementById('manualOffset').value || '0', 10);
       const targetPos = Math.max(0, state.trackPosition + (state.isPlaying ? elapsedSec : 0) + (manualMs / 1000));
 
       if (state.mode === 'LOCAL') {
-        if (player && player.pauseVideo) player.pauseVideo();
+        if (ytReady && player && player.pauseVideo) player.pauseVideo();
         initWebAudioGraph();
-        if (state.streamUrl && audioEl.src !== state.streamUrl) {
-          audioEl.src = state.streamUrl;
-          audioEl.load();
-        }
         if (state.isPlaying) {
           audioEl.currentTime = targetPos;
-          audioEl.play().catch(() => {});
+          audioEl.play().catch(() => {
+            document.getElementById('unlockBanner').style.display = 'block';
+          });
         } else {
           audioEl.pause();
           audioEl.currentTime = state.trackPosition;
         }
-      } else {
+      } else if (state.mode === 'YT') {
         audioEl.pause();
-        if (!player || !player.seekTo) return;
-        const currentVid = player.getVideoData ? player.getVideoData().video_id : '';
-        if (currentVid !== state.videoId) {
-          player.loadVideoById(state.videoId, targetPos);
+        if (!ytReady || !player) return;
+
+        if (state.videoId && loadedVideoId !== state.videoId) {
+          loadedVideoId = state.videoId;
+          lastHardSeekTime = Date.now();
+          if (state.isPlaying) {
+            player.loadVideoById({ videoId: state.videoId, startSeconds: targetPos });
+          } else {
+            player.cueVideoById({ videoId: state.videoId, startSeconds: state.trackPosition });
+          }
+          return;
         }
+
         if (state.isPlaying) {
+          lastHardSeekTime = Date.now();
           player.seekTo(targetPos, true);
           player.playVideo();
+          setTimeout(() => {
+            if (ytReady && player.getPlayerState && player.getPlayerState() !== 1 && player.getPlayerState() !== 3) {
+              document.getElementById('unlockBanner').style.display = 'block';
+            }
+          }, 800);
         } else {
           player.pauseVideo();
           player.seekTo(state.trackPosition, true);
@@ -312,17 +603,18 @@
     setInterval(() => {
       if (!latestState || !latestState.isPlaying) return;
       const syncedNow = Date.now() + clockOffset;
-      const elapsedSec = (syncedNow - latestState.updatedAt) / 1000;
+      const elapsedSec = Math.max(0, (syncedNow - latestState.updatedAt) / 1000);
       const manualMs = parseInt(document.getElementById('manualOffset').value || '0', 10);
       const expectedTime = latestState.trackPosition + elapsedSec + (manualMs / 1000);
 
       if (latestState.mode === 'LOCAL') {
-        if (audioEl.paused) return;
+        if (audioEl.paused || audioEl.readyState < 2) return;
         const actualTime = audioEl.currentTime;
         const driftMs = Math.round((actualTime - expectedTime) * 1000);
         document.getElementById('driftDisplay').innerText = driftMs + ' ms';
 
-        if (Math.abs(driftMs) > 250) {
+        if (Math.abs(driftMs) > 250 && Date.now() - lastHardSeekTime > 2000) {
+          lastHardSeekTime = Date.now();
           audioEl.currentTime = expectedTime;
         } else if (driftMs > 15) {
           audioEl.playbackRate = 0.97;
@@ -331,16 +623,22 @@
         } else {
           audioEl.playbackRate = 1.0;
         }
-      } else if (player && player.getCurrentTime) {
+      } else if (latestState.mode === 'YT' && ytReady && player && player.getPlayerState) {
+        const ytState = player.getPlayerState();
+        if (ytState !== 1) {
+          document.getElementById('driftDisplay').innerText = (ytState === 3) ? 'Buffering...' : 'Tap YT Play';
+          return;
+        }
         const actualTime = player.getCurrentTime();
         const driftMs = Math.round((actualTime - expectedTime) * 1000);
         document.getElementById('driftDisplay').innerText = driftMs + ' ms';
 
-        if (Math.abs(driftMs) > 300) {
+        if (Math.abs(driftMs) > 350 && Date.now() - lastHardSeekTime > 2500) {
+          lastHardSeekTime = Date.now();
           player.seekTo(expectedTime, true);
-        } else if (driftMs > 22) {
+        } else if (driftMs > 25) {
           player.setPlaybackRate(0.95);
-        } else if (driftMs < -22) {
+        } else if (driftMs < -25) {
           player.setPlaybackRate(1.05);
         } else {
           player.setPlaybackRate(1.0);
@@ -349,19 +647,20 @@
     }, 400);
 
     function extractVideoId(input) {
-      try {
-        const url = new URL(input);
-        return url.searchParams.get('v') || input.trim();
-      } catch {
-        return input.trim();
-      }
+      if (!input) return '';
+      const trimmed = input.trim();
+      const match = trimmed.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/);
+      if (match && match[1]) return match[1];
+      if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) return trimmed;
+      return trimmed;
     }
 
     function loadTrack() {
       const vid = extractVideoId(document.getElementById('ytInput').value);
-      if (vid) {
-        socket.emit('update_state', { mode: 'YT', videoId: vid, trackPosition: 0, isPlaying: true });
-      }
+      if (!vid) return;
+      document.getElementById('ytStatus').style.color = '#00e676';
+      document.getElementById('ytStatus').innerText = 'Loaded Video ID: ' + vid;
+      broadcastState({ mode: 'YT', videoId: vid, trackPosition: 0, isPlaying: true });
     }
 
     function broadcastPlay() {
@@ -369,20 +668,20 @@
       let pos = 0;
       if (latestState && latestState.mode === 'LOCAL') {
         pos = audioEl.currentTime || 0;
-      } else if (player && player.getCurrentTime) {
-        pos = player.getCurrentTime();
+      } else if (ytReady && player && player.getCurrentTime) {
+        pos = player.getCurrentTime() || 0;
       }
-      socket.emit('update_state', { isPlaying: true, trackPosition: pos });
+      broadcastState({ isPlaying: true, trackPosition: pos });
     }
 
     function broadcastPause() {
       let pos = 0;
       if (latestState && latestState.mode === 'LOCAL') {
         pos = audioEl.currentTime || 0;
-      } else if (player && player.getCurrentTime) {
-        pos = player.getCurrentTime();
+      } else if (ytReady && player && player.getCurrentTime) {
+        pos = player.getCurrentTime() || 0;
       }
-      socket.emit('update_state', { isPlaying: false, trackPosition: pos });
+      broadcastState({ isPlaying: false, trackPosition: pos });
     }
 
     function resyncNow() {
